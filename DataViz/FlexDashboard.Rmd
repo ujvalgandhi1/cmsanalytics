@@ -1,0 +1,232 @@
+---
+title: "CMS dashboard"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: fill
+    runtime: shiny
+    source_code: embed
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(ggplot2)
+library(data.table)
+library(tidyverse)
+library(plotly)
+library(ggmap)
+library(sqldf)
+
+
+#knitr::opts_chunk$set(echo = TRUE)
+
+df = fread('C:/Work/CMS_RArchitecture/Data/df.csv')
+#df = fread("https://media.githubusercontent.com/media/cms-vivsoft/cms-Rfiles/master/df.csv?token=ALDLOOOT4WMRK4CPM6AASNLAYJIJE")
+```
+
+{data-icon="fa-globe"}
+=============================
+Row {data-width=150}
+--------------------------------------
+### Average Claims Amount
+```{r}
+
+temp0 = sqldf("Select avg(CLM_PMT_AMT) ClaimsAmt from df 
+                where ReadmissionDays <> 'null'")
+
+temp0$ClaimsAmt = round(temp0$ClaimsAmt,2)
+
+AvgClaimAmt= sqldf("Select ClaimsAmt from temp0")
+valueBox(value = AvgClaimAmt,caption = "Average Claims Amount",color = "green")
+```
+
+### Readmission Percentage
+```{r}
+
+temp1 = sqldf("Select (count(distinct case when ReadmissionDays <=30 then DESYNPUF_ID end)) Num,
+                  count(distinct DESYNPUF_ID) Denom
+                  from df 
+            where ReadmissionDays <> 'null' ")
+
+temp1$Ratio = round((temp1$Num/temp1$Denom)*100,2)
+
+ReAdmitRate=sqldf("select Ratio from temp1")
+
+valueBox(value = ReAdmitRate,caption = "Readmission Rate", color = "orange")
+```
+
+Row
+----------------------------------
+
+### Inpatient Counts by Admit Category
+```{r}
+h1= sqldf("Select AdmitCategory, count(distinct DESYNPUF_ID) InpatientCount, 
+                                      avg(CLM_PMT_AMT) ClaimsAmount
+                  from df 
+            where ReadmissionDays <> 'null'  and ReadmissionDays <= 30
+              group by AdmitCategory")
+
+p1=plot_ly(data = h1, 
+               y = h1$AdmitCategory, 
+               x = h1$InpatientCount, 
+               type = 'bar', 
+               orientation = 'h') %>% 
+                layout(xaxis=list(title="Inpatient Count"),
+                yaxis=list(title="Admit Category"))
+p1
+```
+### Claims by Admit Category
+```{r}
+
+h2=sqldf("Select AdmitCategory, count(distinct DESYNPUF_ID) InpatientCount, 
+                                      avg(CLM_PMT_AMT) ClaimsAmount
+                  from df 
+            where ReadmissionDays <> 'null'  and ReadmissionDays <= 30
+              group by AdmitCategory")
+
+p2=plot_ly(data = h1, 
+               y = h1$AdmitCategory, 
+               x = h1$ClaimsAmount, 
+               type = 'bar', 
+               orientation = 'h') %>% 
+                layout(xaxis=list(title="Average Claims Amount"),
+                yaxis=list(title="Admit Category"))
+
+p2
+```
+
+Row
+----------------------------------
+
+
+### United States Map of Readmissions per 10000s of State Population
+```{r}
+
+f = read.csv("https://raw.githubusercontent.com/plotly/datasets/master/2011_us_ag_exports.csv")
+statedata = sqldf("Select a.State, f.code,  
+                  (count(distinct case when ReadmissionDays <=30 then DESYNPUF_ID end)) Num,
+                  sum(Population) Denom
+                  from df a left join f on a.State = f.state
+            where ReadmissionDays <> 'null' 
+              group by a.State, f.code")
+
+statedata$Ratio = round(statedata$Num/(statedata$Denom/10000),2)
+
+g = list(
+  scope = 'usa',
+  projection = list(type = 'albers usa'),
+  showlakes = TRUE,
+  lakecolor = toRGB('white')
+)
+
+p3 = plot_geo(statedata, locationmode = 'USA-states')
+p3 = p3 %>% add_trace(
+  z = ~Ratio, locations = ~code,
+  color = ~Ratio, colors = 'Purples'
+)
+
+p3 <- p3 %>% layout(
+  title = 'Readmission Rate per 10000 of population',
+  geo = g
+)
+
+p3
+```
+
+### Relationship between inpatient count & readmission rate
+```{r}
+
+
+p4df = sqldf("Select BENE_BIRTH_DT, (count(distinct case when ReadmissionDays <=30 then DESYNPUF_ID end)) Num,
+                  count(distinct DESYNPUF_ID) Denom
+                  from df 
+            where ReadmissionDays <> 'null' 
+                  Group by BENE_BIRTH_DT")
+
+p4df = transform(p4df, BENE_BIRTH_DT = as.Date(as.character(p4df$BENE_BIRTH_DT), "%Y%m%d"))
+
+p4df$Age = as.numeric(difftime(as.Date("2021-06-08"), as.Date(p4df$BENE_BIRTH_DT),
+                             unit="weeks"))/52.25
+p4df$Age = round(p4df$Age, 0)
+
+p4df = sqldf("Select Age, sum(Num) Num, sum(Denom) Denom, sum(Denom) InpatientCount
+           from p4df group by Age")
+p4df$Ratio = round((p4df$Num/p4df$Denom)*100,2)
+
+p4 = plot_ly(p4df)
+
+p4 = p4 %>% add_trace(x = ~Age, y = ~InpatientCount, type = 'bar', name = 'Inpatient Count',
+                      marker = list(color = '#C9EEF9'),
+                      hoverinfo = "text",
+                      text = ~paste(InpatientCount, 'Count'))
+
+p4 = p4 %>% add_trace(x = ~Age, y = ~Ratio, type = 'scatter', mode = 'lines', name = 'Ratio', yaxis = 'y2',
+                         line = list(color = '#45171D'),
+                         hoverinfo = "text",
+                         text = ~paste(Ratio, '%'))
+
+p4 = p4 %>% layout(title = 'Inpatient Count & Readmission Rate',
+                      xaxis = list(title = ""),
+                      yaxis = list(side = 'left', title = 'Readmission Rate', showgrid = FALSE, zeroline = FALSE),
+                      yaxis2 = list(side = 'right', overlaying = "y", title = 'Inpatient Count', showgrid = FALSE, zeroline = FALSE))
+
+p4
+
+```
+Row
+----------------------------------
+
+### Scatter Plot
+```{r}
+
+#df = fread('C:/Work/CMS_RArchitecture/Data/df.csv')
+
+p5df = sqldf("Select BENE_BIRTH_DT, Census_AgeBuckets, (count(distinct case when ReadmissionDays <=30 then DESYNPUF_ID end)) Num,
+                  count(distinct DESYNPUF_ID) Denom
+                  from df 
+            where ReadmissionDays <> 'null' 
+                  Group by BENE_BIRTH_DT, Census_AgeBuckets")
+
+p5df = transform(p5df, BENE_BIRTH_DT = as.Date(as.character(p5df$BENE_BIRTH_DT), "%Y%m%d"))
+
+p5df$Age = as.numeric(difftime(as.Date("2021-06-08"), as.Date(p5df$BENE_BIRTH_DT),
+                             unit="weeks"))/52.25
+p5df$Age = round(p5df$Age, 0)
+
+p5df = sqldf("Select Age, Census_AgeBuckets, sum(Num) Num, sum(Denom) Denom, sum(Denom) InpatientCount
+           from p5df group by Age, Census_AgeBuckets")
+p5df$Ratio = round((p5df$Num/p5df$Denom)*100,2)
+
+p5 = plot_ly(data=p5df, x = ~Ratio, y = ~InpatientCount, color = ~Census_AgeBuckets, type = 'scatter'
+              )
+
+p5 = p5 %>% layout(title = 'Scatter Plot - Inpatient Count vs Readmission Rate for Beneficiary Age (Color is Census Age Buckets)',
+                      yaxis = list(zeroline = FALSE),
+                      xaxis = list(zeroline = FALSE))
+
+p5
+
+```
+### Pie Plot
+```{r}
+
+#df = fread('C:/Work/CMS_RArchitecture/Data/df.csv')
+
+p6df = sqldf("Select ReadmissionDays, count(distinct DESYNPUF_ID) InpatientCount
+                  from df 
+            where ReadmissionDays <> 'null' and ReadmissionDays <= 30
+                  Group by ReadmissionDays")
+
+p6 = p6df %>% plot_ly(labels = ~ReadmissionDays, values = ~InpatientCount)
+
+p6 = p6 %>% add_pie(hole = 0.6)
+
+p6 = p6 %>% layout(
+  title = "Readmissions by Day of Readmission",  showlegend = F,
+  xaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE),
+  yaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE))
+
+
+p6
+
+```
